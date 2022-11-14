@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/labstack/echo"
 )
 
@@ -77,7 +78,128 @@ func main() {
 	r.GET("/echoWrapHandler/home", echo.WrapHandler(ActionHome))
 	r.GET("/echoWrapHandler/about", ActionAbout)
 
+	// Routing Static Assets
+	// curl -X GET http://localhost:9000/static/layout.js
 	r.Static("/static", "assets")
+
+	// Parsing Request Payload
+	/* Form Data
+	curl --location --request POST 'http://localhost:9000/user' \
+	--header 'Content-Type: application/x-www-form-urlencoded' \
+	--data-urlencode 'name=hafiz' \
+	--data-urlencode 'email=hafiz@gmail.com'
+	*/
+	/* JSON Payload
+			curl --location --request POST 'http://localhost:9000/user' \
+	--header 'Content-Type: application/json' \
+	--data-raw '{
+		"name": "hafiz",
+		"email": "hafiz@gmail.com"
+	}'
+	*/
+	/* XML Payload
+		curl --location --request POST 'http://localhost:9000/user' \
+	--header 'Content-Type: application/xml' \
+	--data-raw '<?xml version="1.0"?>\
+	<Data>\
+		<Name>hafiz</Name>\
+		<Email>hafiz@gmail.com</Email>\
+	</Data>'
+	*/
+	/* Query String
+	curl --location --request GET 'http://localhost:9000/user?name=hafiz&email=hafiz@gmail.com'
+	*/
+	r.Any("/user", func(c echo.Context) (err error) {
+		u := new(User)
+		if err = c.Bind(u); err != nil {
+			return
+		}
+
+		return c.JSON(http.StatusOK, u)
+	})
+
+	// Request payload validation
+	/*
+		curl --location --request POST 'http://localhost:9000/validation/users' \
+		--header 'Content-Type: application/json' \
+		--data-raw '{
+			"name": "hafiz",
+			"email": "hafiz@gmail.com",
+			"age": 121
+		}'
+	*/
+	r.Validator = &CustomValidator{validator: validator.New()}
+	// Error Handler
+	/*
+		r.HTTPErrorHandler = func(err error, c echo.Context) {
+			report, ok := err.(*echo.HTTPError)
+			if !ok {
+				report = echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+			}
+
+			c.Logger().Error(report)
+			c.JSON(report.Code, report)
+		}
+	*/
+
+	// Human-Readable Error
+	r.HTTPErrorHandler = func(err error, c echo.Context) {
+		report, ok := err.(*echo.HTTPError)
+		if !ok {
+			report = echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+		}
+
+		if castedObject, ok := err.(validator.ValidationErrors); ok {
+			for _, err := range castedObject {
+				switch err.Tag() {
+				case "required":
+					report.Message = fmt.Sprintf("%s is required",
+						err.Field())
+				case "email":
+					report.Message = fmt.Sprintf("%s is not valid email",
+						err.Field())
+				case "gte":
+					report.Message = fmt.Sprintf("%s value must be greater than %s",
+						err.Field(), err.Param())
+				case "lte":
+					report.Message = fmt.Sprintf("%s value must be lower than %s",
+						err.Field(), err.Param())
+				}
+
+				break
+			}
+		}
+
+		c.Logger().Error(report)
+		c.JSON(report.Code, report)
+	}
+
+	// Custom Error Page
+	/*
+		r.HTTPErrorHandler = func(err error, c echo.Context) {
+			report, ok := err.(*echo.HTTPError)
+			if !ok {
+				report = echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+			}
+
+			errPage := fmt.Sprintf("%d.html", report.Code)
+			if err := c.File(errPage); err != nil {
+				c.HTML(report.Code, "Errrrooooorrrrr")
+			}
+		}
+	*/
+
+	r.POST("/validation/users", func(c echo.Context) error {
+		u := new(UserValidation)
+		if err := c.Bind(u); err != nil {
+			return err
+		}
+		if err := c.Validate(u); err != nil {
+			return err
+		}
+
+		return c.JSON(http.StatusOK, true)
+	})
 
 	r.Start(":9000")
 }
@@ -99,3 +221,22 @@ var ActionAbout = echo.WrapHandler(
 		},
 	),
 )
+
+type User struct {
+	Name  string `json:"name" form:"name" query:"name"`
+	Email string `json:"email" form:"email" query:"email"`
+}
+
+type UserValidation struct {
+	Name  string `json:"name"  validate:"required"`
+	Email string `json:"email" validate:"required,email"`
+	Age   int    `json:"age"   validate:"gte=0,lte=80"`
+}
+
+type CustomValidator struct {
+	validator *validator.Validate
+}
+
+func (cv *CustomValidator) Validate(i interface{}) error {
+	return cv.validator.Struct(i)
+}
